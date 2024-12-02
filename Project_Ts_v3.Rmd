@@ -1,0 +1,264 @@
+---
+title: "Project_Timeseries"
+author: "Group B"
+date: "2024-11-26"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+
+library(tidyverse)
+library(tsibble)
+library(fable)
+library(lubridate)
+library(feasts)
+
+```
+
+```{r}
+# Read dataset
+data <- read_csv("~/Desktop/DASC 6510(Time Series)/project/kalimati_tarkari_dataset.csv")
+
+# Convert Date column to Date type
+data <- data %>% mutate(Date = as.Date(Date, format = "%Y-%m-%d"))
+
+# Filter the selected commodities 
+selected_commodities <- c(
+  "Potato Red", "Potato Red(Indian)", 
+  #"Potato Red(Mude)",
+  "Tomato Small(Local)", "Tomato Small(Indian)", "Tomato Small(Tunnel)",
+  #"Tomato Small(Terai)", 
+  #"Litchi(Indian)", "Litchi(Local)",
+  "Papaya(Indian)", "Papaya(Nepali)"
+)
+
+#Date range selection and tsible format
+filtered_data <- data %>%
+  filter(Commodity %in% selected_commodities, Date >= as.Date("2019-06-01")) %>%
+  as_tsibble(index = Date, key = Commodity)
+
+# Create a grouping column for comparative analysis
+filtered_data <- filtered_data %>%
+  mutate(Group = case_when(
+    Commodity %in% c("Potato Red", "Potato Red(Indian)") ~ "Potato Red",
+    #, "Potato Red(Mude)"
+    Commodity %in% c("Tomato Small(Local)", "Tomato Small(Indian)",  "Tomato Small(Tunnel)") ~ "Tomato Small",
+    #"Tomato Small(Terai)",
+    #Commodity %in% c("Litchi(Indian)", "Litchi(Local)") ~ "Litchi",
+    Commodity %in% c("Papaya(Indian)", "Papaya(Nepali)") ~ "Papaya",
+    TRUE ~ Commodity
+  ))
+
+```
+
+```{r}
+# Define a function to create plots for each group
+plot_group_variants <- function(group_name, commodities) {
+  filtered_data %>%
+    filter(Group == group_name) %>%
+    ggplot(aes(x = Date, y = Maximum, color = Commodity)) +
+    geom_line() +
+    labs(
+      title = paste(group_name, "Variants (2019-2021)"),
+      x = "Date",
+      y = "Maximum Price",
+      color = "Commodity"
+    ) +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = 14, face = "bold"),
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      legend.position = "right"
+    )
+}
+
+# Plot each group: Potato Red, Tomato Small, Litchi, and Papaya
+potato_plot <- plot_group_variants("Potato Red", c("Potato Red", "Potato Red(Indian)")) 
+#, "Potato Red(Mude)"
+tomato_plot <- plot_group_variants("Tomato Small", c("Tomato Small(Local)", "Tomato Small(Indian)", "Tomato Small(Tunnel)"))
+#"Tomato Small(Terai)", 
+#litchi_plot <- plot_group_variants("Litchi", c("Litchi(Indian)", "Litchi(Local)"))
+papaya_plot <- plot_group_variants("Papaya", c("Papaya(Indian)", "Papaya(Nepali)"))
+
+# Display the plots one by one
+print(potato_plot)
+print(tomato_plot)
+#print(litchi_plot)
+print(papaya_plot)
+```
+
+
+```{r}
+#Missing values handling
+filtered_data <- filtered_data %>%
+  fill_gaps() %>%
+  mutate(Maximum = zoo::na.approx(Maximum, na.rm = FALSE))
+```
+
+```{r}
+
+# Split data into train and test sets
+train_data <- filtered_data %>%
+  filter(Date < as.Date("2021-01-01"))
+
+test_data <- filtered_data %>%
+  filter(Date >= as.Date("2021-01-01"))
+
+```
+
+
+
+```{r}
+# Perform STL decomposition for Maximum price
+stl_decomposition <- train_data %>%
+  model(STL(Maximum ~ season(window = "periodic")))
+
+# Extract components
+components_data <- stl_decomposition %>%
+  components()
+
+# Pivot the components into a long format
+components_long <- components_data %>%
+  pivot_longer(
+    cols = c(trend, season_week, remainder),  # Adjust to use your actual column names
+    names_to = "Component",
+    values_to = "Value"
+  )
+
+# Define commodity groups
+commodity_groups <- list(
+  "Potato" = c("Potato Red", "Potato Red(Indian)"),
+  #, "Potato Red(Mude)"
+  "Tomato" = c("Tomato Small(Local)", "Tomato Small(Indian)",  "Tomato Small(Tunnel)"),
+  #"Tomato Small(Terai)",
+  "Papaya" = c("Papaya(Indian)", "Papaya(Nepali)")
+)
+
+# Generate and print plots dynamically
+library(purrr)
+
+plots <- map(commodity_groups, function(commodities) {
+  components_long %>%
+    filter(Commodity %in% commodities) %>%
+    ggplot(aes(x = Date, y = Value, color = Commodity)) +
+    geom_line() +
+    facet_grid(Component ~ Commodity, scales = "free_y", switch = "y") +
+    labs(
+      title = paste("STL Decomposition for", names(commodities), "Variants"),
+      x = "Date",
+      y = "Value",
+      color = "Commodity"
+    ) +
+    theme_minimal() +
+    theme(
+      strip.text.y = element_text(angle = 0),
+      axis.text.x = element_text(angle = 45, hjust = 1)
+    )
+})
+
+# Display each plot with a delay
+for (plot in plots) {
+  print(plot)
+  Sys.sleep(1) # Pause to view each plot
+}
+
+```
+
+
+```{r}
+
+
+# Fit ARIMA models for Maximum price
+arima_models <- train_data %>%
+  model(ARIMA(Maximum))
+
+# Loop through each unique commodity
+commodities <- unique(arima_models$Commodity)
+
+for (commodity in commodities) {
+  # Filter the specific model for the commodity
+  specific_model <- arima_models %>%
+    filter(Commodity == commodity)
+  
+  # Print the commodity name
+  cat("ARIMA Model for:", commodity, "\n")
+  
+  # Report ARIMA (p, d, q)
+  report(specific_model)
+  cat("\n")
+}
+
+
+# Generate forecasts for the test data
+forecasts <- arima_models %>%
+  forecast(new_data = test_data)
+
+# Visualize the forecasts for each commodity
+forecasts %>%
+  autoplot(filtered_data, level = NULL) +
+  facet_wrap(~ Commodity, scales = "free_y") +
+  labs(
+    title = "ARIMA Forecast for Maximum Prices of Selected Commodities",
+    x = "Date",
+    y = "Maximum Price"
+  ) +
+  theme_minimal()
+
+
+```
+
+```{r}
+
+# Fit ETS models for Maximum price
+ets_models <- train_data %>%
+  model(ETS(Maximum))
+
+report(ets_models)
+
+# Generate forecasts for the test data
+ets_forecasts <- ets_models %>%
+  forecast(new_data = test_data)
+
+# Visualize the ETS forecasts for each commodity
+ets_forecasts %>%
+  autoplot(filtered_data, level = NULL) +
+  facet_wrap(~ Commodity, scales = "free_y") +
+  labs(
+    title = "ETS Forecast for Maximum Prices of Selected Commodities",
+    x = "Date",
+    y = "Maximum Price"
+  ) +
+  theme_minimal()
+
+
+```
+
+```{r}
+```
+
+```{r}
+# Compute accuracy metrics for ARIMA forecasts
+arima_accuracy <- forecasts %>%
+  accuracy(data = test_data) %>%
+  mutate(Model = "ARIMA")  # Add a column to identify the model
+
+# Compute accuracy metrics for ETS forecasts
+ets_accuracy <- ets_forecasts %>%
+  accuracy(data = test_data) %>%
+  mutate(Model = "ETS")  # Add a column to identify the model
+
+# Combine accuracy metrics for both models
+combined_accuracy <- bind_rows(arima_accuracy, ets_accuracy)
+
+# Display combined accuracy metrics
+print("Combined Accuracy Metrics:")
+print(combined_accuracy)
+
+
+
+```
+
